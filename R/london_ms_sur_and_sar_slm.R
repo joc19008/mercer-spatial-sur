@@ -152,75 +152,8 @@ Y_loc <- c(rbind(y1, y2))
 Kbeta <- ncol(X_blk)
 
 
-# Mercer SAR–SUR (precision form) in Stan
-stan_code_mercer <- '
-functions {
-  matrix kron_prod(matrix A, matrix B) {
-    int p = rows(A), q = rows(B);
-    matrix[p*q, p*q] C;
-    for (i in 1:p) for (j in 1:p)
-      C[(i-1)*q+1:i*q, (j-1)*q+1:j*q] = A[i,j] * B;
-    return C;
-  }
-}
-data {
-  int<lower=1> n; 
-  int<lower=1> M;  
-  int<lower=1> N;  
-  int<lower=1> Kbeta;
-  matrix[n,n] D2; 
-  matrix[N,Kbeta] X;  
-  vector[N] Y;
-  real<lower=0> eps; // tiny value
-  
-  // priors
-  real mu_ell;        
-  real<lower=0> sd_ell;
-  vector[Kbeta] u_beta;
-  matrix[Kbeta,Kbeta] V_beta; // SPD
-  vector[M] m_tau;    
-  vector<lower=0>[M] s_tau;
-  real<lower=0> eta_lkj; // LKJ shape
-}
-parameters {
-  vector[Kbeta] beta;
-  real log_ell; // log length-scale (km)
-  vector[M] log_tau;     
-  cholesky_factor_corr[M] L_corr; // Cholesky of correlation
-}
-transformed parameters {
-  real<lower=0> ell = exp(log_ell);
-  matrix[n,n] K = exp( - D2 / (ell*ell) );
-  for (i in 1:n) K[i,i] = 1.0;
-  K = K + diag_matrix(rep_vector(eps, n));
-  
-  vector<lower=0>[M] tau = exp(log_tau);  
-  matrix[M,M] L_S = diag_pre_multiply(tau, L_corr);
-  matrix[M,M] Sigma = multiply_lower_tri_self_transpose(L_S);
-  matrix[M,M] Sigma_inv = inverse_spd(Sigma);
-
-  matrix[N,N] Prec = kron_prod(K, Sigma_inv);
-}
-model {
-  // priors
-  beta ~ multi_normal(u_beta, V_beta);
-  log_ell ~ normal(mu_ell, sd_ell);
-  log_tau ~ normal(m_tau, s_tau);
-  L_corr ~ lkj_corr_cholesky(eta_lkj);
-  
-  // likelihood
-  Y ~ multi_normal_prec(X*beta, Prec);
-}
-generated quantities {
-  real ell_km = exp(log_ell);
-  corr_matrix[M] R = multiply_lower_tri_self_transpose(L_corr);
-  real rho12 = (M>=2) ? R[1,2] : 0;
-  vector[M] sigma = exp(log_tau);
-  real r10 = 1.517 * ell_km; // sqrt(log 10)
-}
-'
-
-mod_mercer <- stan_model(model_code = stan_code_mercer)
+# Fit Mercer SAR SUR
+mod_mercer <- rstan::stan_model(file = "stan/mercer_sar_sur_london.stan")
 
 
 stan_data_mercer <- list(
@@ -254,72 +187,8 @@ print(fit.mercer, pars = c("beta","Sigma","ell_km","r10","rho12","sigma","tau"),
 
 
 # SUR–SLM comparator in Stan
-stan_code_sur <- '
-functions {
-  real log_det_I_minus_rhoW(matrix W, real rho) {
-    int n = rows(W);
-    matrix[n,n] A = diag_matrix(rep_vector(1.0, n)) - rho * W;
-    return log_determinant(A);
-  }
-}
-data {
-  int<lower=1> n;
-  int<lower=1> K1;
-  int<lower=1> K2;
-  matrix[n,K1] X1;
-  matrix[n,K2] X2;
-  vector[n] y1;
-  vector[n] y2;
-  matrix[n,n] W;     // row-standardized
-  real rho_lower;
-  real rho_upper;
-  matrix[2,2] Omega;
-  real<lower=2> nu;
-}
-parameters {
-  vector[K1] beta1;
-  vector[K2] beta2;
-  cov_matrix[2] Sinv;  // precision of SUR errors
-  real<lower=0,upper=1> rho_raw1;
-  real<lower=0,upper=1> rho_raw2;
-}
-transformed parameters {
-  real rho1 = rho_lower + (rho_upper - rho_lower) * rho_raw1;
-  real rho2 = rho_lower + (rho_upper - rho_lower) * rho_raw2;
-}
-model {
-  matrix[n,n] A1 = diag_matrix(rep_vector(1.0, n)) - rho1 * W;
-  matrix[n,n] A2 = diag_matrix(rep_vector(1.0, n)) - rho2 * W;
 
-  vector[n] r1 = A1 * y1 - X1 * beta1;
-  vector[n] r2 = A2 * y2 - X2 * beta2;
-
-  beta1 ~ normal(0, 5);
-  beta2 ~ normal(0, 5);
-  Sinv ~ wishart(nu, Omega);
-
-  target += log_det_I_minus_rhoW(W, rho1) + log_det_I_minus_rhoW(W, rho2);
-
-  {
-    matrix[2,2] S = inverse_spd(Sinv);
-    for (i in 1:n) {
-      vector[2] e_i;
-      e_i[1] = r1[i];
-      e_i[2] = r2[i];
-      target += multi_normal_lpdf(e_i | rep_vector(0.0,2), S);
-    }
-  }
-}
-generated quantities {
-  real log_det1 = log_det_I_minus_rhoW(W, rho1);
-  real log_det2 = log_det_I_minus_rhoW(W, rho2);
-}
-'
-
-stan_sur <- stan_model(model_code = stan_code_sur)
-
-
-# kNN W (row-standardized) for SUR–SLM 
+## kNN W (row-standardized) for SUR–SLM 
 make_W <- function(coords, k) {
   n <- nrow(coords)
   idx <- FNN::get.knn(coords, k = k + 1)$nn.index
@@ -346,6 +215,11 @@ ev <- eigen(W, only.values = TRUE)$values
 rho_upper <- 0.999 / max(Mod(ev))
 rho_lower <- -rho_upper
 
+
+
+
+# Fit SUR–SLM
+stan_sur <- rstan::stan_model(file = "stan/sur_slm.stan")
 
 
 stan_data_sar <- list(
