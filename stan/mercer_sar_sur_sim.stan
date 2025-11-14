@@ -19,16 +19,17 @@ data {
   real<lower=0> eps; // tiny jitter
   
   // priors
-  real mu_ell;        real<lower=0> sd_ell;
+  real mu_ell;        
+  real<lower=0> sd_ell;
   vector[Kbeta] u_beta;
   matrix[Kbeta,Kbeta] V_beta; // SPD
-  vector[M] m_tau;    vector<lower=0>[M] s_tau;
+  vector[M] m_tau;    
+  vector<lower=0>[M] s_tau;
   real<lower=0> eta_lkj; // LKJ shape, e.g., 2
 }
 parameters {
   vector[Kbeta] beta;
   real log_ell; // log length-scale (km)
-  // vector<lower=0>[M] tau; // per-equation SDs
   vector[M] log_tau;     
   cholesky_factor_corr[M] L_corr; // Cholesky of correlation
 }
@@ -59,6 +60,5 @@ generated quantities {
   real ell_km = exp(log_ell);
   corr_matrix[M] R = multiply_lower_tri_self_transpose(L_corr);
   real rho12 = (M>=2) ? R[1,2] : 0;
-  vector[M] tau = exp(log_tau);
   real r10 = 1.517 * ell_km; // sqrt(log 10)
 }
