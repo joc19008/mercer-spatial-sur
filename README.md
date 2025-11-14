@@ -1,1 +1,1 @@
-Download data from \url{https://insideairbnb.com/}
+Download data from https://insideairbnb.com/
